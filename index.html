@@ -36,6 +36,7 @@
       cursor: pointer;
       position: relative;
       box-shadow: inset 0 0 0 2px rgba(0,0,0,0.25);
+      transition: transform 0.08s ease;
     }
     .swatch:hover { transform: translateY(-1px); }
     .swatch.locked { opacity: .35; cursor: not-allowed; filter: grayscale(35%); }
@@ -69,20 +70,17 @@
 <body>
   <div id="hud" style="display:none">
     Coins: <span id="coinCount">0</span> / 100
-    <small>WASD / Arrow keys to move • Space to jump • R to reset</small>
+    <small>WASD / Arrow keys to move • Space to jump • R reset • Mouse to rotate camera • Wheel zoom</small>
   </div>
 
   <div id="menu">
     <div class="panel">
       <h1>Mini 3D Coin Game</h1>
       <p>Pick your character color. Collect 100 coins to win. Each win unlocks a new color.</p>
-      <p><b>Controls:</b> WASD or Arrow Keys move, Space jumps, R resets the round.</p>
+      <p><b>Controls:</b> WASD/Arrows move, Space jumps, Mouse rotates camera, Wheel zooms, R resets.</p>
       <div class="row" id="colorRow"></div>
       <button id="startBtn">Start Game</button>
-      <p style="margin-top:10px; opacity:.75">
-        Tip: If your browser complains about “file://” security, run a tiny local server
-        (VS Code “Live Server” extension works great).
-      </p>
+      <p style="margin-top:10px; opacity:.75">Tip: GitHub Pages runs this cleanly. Local file:// sometimes blocks CDN scripts.</p>
     </div>
   </div>
 
@@ -93,7 +91,6 @@
     </div>
   </div>
 
-  <!-- Three.js (UMD global) -->
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 
   <script>
@@ -101,11 +98,7 @@
     // Persistent unlock system
     // =========================
     const STORAGE_KEY = "mini3d_coin_game_v1";
-    const DEFAULT_STATE = {
-      wins: 0,
-      unlocked: 1, // number of colors unlocked (starting at 1)
-      selectedColorIndex: 0
-    };
+    const DEFAULT_STATE = { wins: 0, unlocked: 1, selectedColorIndex: 0 };
 
     const COLOR_PALETTE = [
       { name: "Red",    hex: 0xe74c3c },
@@ -124,17 +117,12 @@
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return { ...DEFAULT_STATE };
-        const parsed = JSON.parse(raw);
-        return { ...DEFAULT_STATE, ...parsed };
+        return { ...DEFAULT_STATE, ...JSON.parse(raw) };
       } catch {
         return { ...DEFAULT_STATE };
       }
     }
-
-    function saveState() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    }
-
+    function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     let state = loadState();
 
     // =========================
@@ -160,17 +148,12 @@
         div.style.background = `#${c.hex.toString(16).padStart(6, "0")}`;
         div.title = (idx < unlockedCount) ? c.name : `${c.name} (locked)`;
 
-        if (idx >= unlockedCount) {
-          const badge = document.createElement("div");
-          badge.className = "badge";
-          badge.textContent = "LOCKED";
-          div.appendChild(badge);
-        } else {
-          const badge = document.createElement("div");
-          badge.className = "badge";
-          badge.textContent = c.name;
-          div.appendChild(badge);
+        const badge = document.createElement("div");
+        badge.className = "badge";
+        badge.textContent = (idx < unlockedCount) ? c.name : "LOCKED";
+        div.appendChild(badge);
 
+        if (idx < unlockedCount) {
           div.addEventListener("click", () => {
             selectedColorIndex = idx;
             state.selectedColorIndex = idx;
@@ -178,13 +161,11 @@
             renderColorPicker();
           });
         }
-
         colorRowEl.appendChild(div);
       });
 
       startBtn.textContent = `Start Game (Wins: ${state.wins})`;
     }
-
     renderColorPicker();
 
     // =========================
@@ -198,8 +179,8 @@
     const COINS_TO_WIN = 100;
 
     // World settings
-    const WORLD_SIZE = 180;      // plane extends about this radius
-    const COIN_SPAWN_COUNT = 40; // coins present at a time (they respawn after pickup)
+    const WORLD_SIZE = 180;
+    const COIN_SPAWN_COUNT = 40;
     const COIN_RADIUS = 0.55;
     const PLAYER_RADIUS = 0.7;
     const PLAYER_HEIGHT = 1.6;
@@ -213,12 +194,36 @@
     let running = false;
     let lastTime = 0;
 
+    // =========================
+    // Mouse camera controls (orbit)
+    // =========================
+    let camYaw = Math.PI;      // around Y
+    let camPitch = 0.45;       // up/down
+    let camDist = 12.0;        // zoom
+    const CAM_MIN_DIST = 5.5;
+    const CAM_MAX_DIST = 22.0;
+    const CAM_MIN_PITCH = 0.12;
+    const CAM_MAX_PITCH = 1.20;
+    const MOUSE_SENS = 0.0032;
+
+    let pointerLocked = false;
+
+    function applyCamera() {
+      // Spherical coordinates around player
+      const x = Math.sin(camYaw) * Math.cos(camPitch) * camDist;
+      const z = Math.cos(camYaw) * Math.cos(camPitch) * camDist;
+      const y = Math.sin(camPitch) * camDist;
+
+      const target = new THREE.Vector3(player.position.x, player.position.y + 1.1, player.position.z);
+      camera.position.set(target.x + x, target.y + y, target.z + z);
+      camera.lookAt(target);
+    }
+
     function initThree() {
       scene = new THREE.Scene();
       scene.fog = new THREE.Fog(0x0b1020, 35, 220);
 
       camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 500);
-      camera.position.set(0, 7, 12);
 
       renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -226,12 +231,9 @@
       document.body.appendChild(renderer.domElement);
 
       // Lights
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x223355, 0.8);
-      scene.add(hemi);
-
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x223355, 0.8));
       const dir = new THREE.DirectionalLight(0xffffff, 1.0);
       dir.position.set(12, 18, 8);
-      dir.castShadow = false;
       scene.add(dir);
 
       // Ground
@@ -239,10 +241,8 @@
       const groundMat = new THREE.MeshStandardMaterial({ color: 0x1e2a44, roughness: 1.0, metalness: 0.0 });
       ground = new THREE.Mesh(groundGeo, groundMat);
       ground.rotation.x = -Math.PI / 2;
-      ground.position.y = 0;
       scene.add(ground);
 
-      // A little border vibe (not collision, just visual)
       const borderGeo = new THREE.RingGeometry(WORLD_SIZE - 1, WORLD_SIZE + 1, 64);
       const borderMat = new THREE.MeshBasicMaterial({ color: 0x223a66, side: THREE.DoubleSide, transparent:true, opacity:0.55 });
       const border = new THREE.Mesh(borderGeo, borderMat);
@@ -257,7 +257,6 @@
       player.position.set(0, PLAYER_HEIGHT / 2, 0);
       scene.add(player);
 
-      // Player "face" dot for direction (purely for fun)
       const noseGeo = new THREE.SphereGeometry(0.16, 12, 12);
       const noseMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.0 });
       const nose = new THREE.Mesh(noseGeo, noseMat);
@@ -271,11 +270,59 @@
 
       // Events
       window.addEventListener("resize", onResize);
+
       window.addEventListener("keydown", (e) => {
         keys.add(e.key.toLowerCase());
         if (e.key.toLowerCase() === "r" && running) resetRound();
+        // Optional: press Esc to exit pointer lock (browser already does this)
       });
       window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+      // Pointer lock for smooth mouse look (click canvas to lock)
+      renderer.domElement.addEventListener("click", () => {
+        if (!running) return;
+        renderer.domElement.requestPointerLock?.();
+      });
+
+      document.addEventListener("pointerlockchange", () => {
+        pointerLocked = (document.pointerLockElement === renderer.domElement);
+      });
+
+      document.addEventListener("mousemove", (e) => {
+        if (!running) return;
+
+        // If pointer lock is available, use movementX/Y for infinite rotation.
+        // If not locked, only rotate while left mouse is held down (fallback).
+        if (pointerLocked) {
+          camYaw   -= e.movementX * MOUSE_SENS;
+          camPitch -= e.movementY * MOUSE_SENS;
+        } else if (mouseDrag.active) {
+          camYaw   -= (e.clientX - mouseDrag.lastX) * MOUSE_SENS;
+          camPitch -= (e.clientY - mouseDrag.lastY) * MOUSE_SENS;
+          mouseDrag.lastX = e.clientX;
+          mouseDrag.lastY = e.clientY;
+        }
+
+        camPitch = Math.max(CAM_MIN_PITCH, Math.min(CAM_MAX_PITCH, camPitch));
+      });
+
+      // Drag fallback (when pointer lock isn't used)
+      const mouseDrag = { active: false, lastX: 0, lastY: 0 };
+      renderer.domElement.addEventListener("mousedown", (e) => {
+        if (!running) return;
+        if (e.button !== 0) return;
+        mouseDrag.active = true;
+        mouseDrag.lastX = e.clientX;
+        mouseDrag.lastY = e.clientY;
+      });
+      window.addEventListener("mouseup", () => (mouseDrag.active = false));
+
+      // Wheel zoom
+      window.addEventListener("wheel", (e) => {
+        if (!running) return;
+        camDist += Math.sign(e.deltaY) * 0.9;
+        camDist = Math.max(CAM_MIN_DIST, Math.min(CAM_MAX_DIST, camDist));
+      }, { passive: true });
     }
 
     function onResize() {
@@ -288,45 +335,36 @@
     // =========================
     // Coins + collision
     // =========================
-    function randInRange(min, max) {
-      return Math.random() * (max - min) + min;
-    }
+    function randInRange(min, max) { return Math.random() * (max - min) + min; }
 
     function randomGroundPoint() {
-      // Keep it inside a circle, not near the very edge
       const r = Math.sqrt(Math.random()) * (WORLD_SIZE - 8);
       const a = Math.random() * Math.PI * 2;
       return { x: Math.cos(a) * r, z: Math.sin(a) * r };
     }
 
     function makeCoinMesh() {
-      // Mario-ish coin: thin cylinder
       const geo = new THREE.CylinderGeometry(COIN_RADIUS, COIN_RADIUS, 0.18, 20, 1);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xffd24a, roughness: 0.35, metalness: 0.45, emissive: 0x221400, emissiveIntensity: 0.15 });
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xffd24a, roughness: 0.35, metalness: 0.45,
+        emissive: 0x221400, emissiveIntensity: 0.15
+      });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.z = Math.PI / 2; // stand it up
-      mesh.position.y = 0.7;         // sit on floor visually
+      mesh.rotation.z = Math.PI / 2;
+      mesh.position.y = 0.7;
       return mesh;
     }
 
     function spawnCoins(count) {
-      // Clear old
       for (const c of coins) scene.remove(c.mesh);
       coins = [];
-
       for (let i = 0; i < count; i++) {
         const mesh = makeCoinMesh();
         const p = randomGroundPoint();
         mesh.position.x = p.x;
         mesh.position.z = p.z;
         scene.add(mesh);
-
-        coins.push({
-          mesh,
-          // Simple hitbox: sphere
-          radius: COIN_RADIUS * 0.95,
-          spin: randInRange(1.5, 3.2)
-        });
+        coins.push({ mesh, radius: COIN_RADIUS * 0.95, spin: randInRange(1.5, 3.2) });
       }
     }
 
@@ -337,27 +375,20 @@
     }
 
     function checkCoinCollisions() {
-      // Treat player as a vertical capsule-ish; for simplicity use a sphere at player center.
-      const px = player.position.x;
-      const pz = player.position.z;
-      const py = player.position.y;
-
-      // Use a sphere centered around torso
-      const playerHitY = py; // close enough
+      const px = player.position.x, pz = player.position.z, py = player.position.y;
       const pr = PLAYER_RADIUS * 0.95;
+      const playerHitY = py;
 
       for (const c of coins) {
         const dx = c.mesh.position.x - px;
         const dz = c.mesh.position.z - pz;
         const dy = c.mesh.position.y - playerHitY;
-
         const distSq = dx*dx + dy*dy + dz*dz;
         const r = pr + c.radius;
 
         if (distSq <= r*r) {
           coinCounter++;
           coinCountEl.textContent = String(coinCounter);
-          // Respawn this coin somewhere else
           respawnCoin(c);
 
           if (coinCounter >= COINS_TO_WIN) {
@@ -385,9 +416,7 @@
 
     function update(dt) {
       // Spin coins
-      for (const c of coins) {
-        c.mesh.rotation.y += c.spin * dt;
-      }
+      for (const c of coins) c.mesh.rotation.y += c.spin * dt;
 
       // Movement inputs
       let ax = 0, az = 0;
@@ -396,64 +425,41 @@
       if (keys.has("a") || keys.has("arrowleft")) ax -= 1;
       if (keys.has("d") || keys.has("arrowright")) ax += 1;
 
-      const dir = new THREE.Vector3(ax, 0, az);
-      if (dir.lengthSq() > 0) dir.normalize();
+      const input = new THREE.Vector3(ax, 0, az);
+      if (input.lengthSq() > 0) input.normalize();
 
-      // Camera-relative movement (forward = where camera looks)
-      const camForward = new THREE.Vector3();
-      camera.getWorldDirection(camForward);
-      camForward.y = 0;
-      camForward.normalize();
-
-      const camRight = new THREE.Vector3().crossVectors(camForward, new THREE.Vector3(0,1,0)).normalize().multiplyScalar(-1);
+      // Move relative to camera yaw (not full camera direction, keeps movement on ground)
+      const forward = new THREE.Vector3(Math.sin(camYaw), 0, Math.cos(camYaw)).normalize(); // note: yaw uses same basis
+      const right   = new THREE.Vector3(forward.z, 0, -forward.x).normalize();
 
       const move = new THREE.Vector3();
-      move.addScaledVector(camForward, dir.z);
-      move.addScaledVector(camRight, dir.x);
+      move.addScaledVector(forward, input.z);
+      move.addScaledVector(right, input.x);
       if (move.lengthSq() > 0) move.normalize();
 
       player.position.x += move.x * MOVE_SPEED * dt;
       player.position.z += move.z * MOVE_SPEED * dt;
 
-      // Face direction of movement
+      // Face movement direction (only if moving)
       if (move.lengthSq() > 0.0001) {
-        const targetYaw = Math.atan2(move.x, move.z);
-        player.rotation.y = targetYaw;
+        player.rotation.y = Math.atan2(move.x, move.z);
       }
 
       // Gravity + jump
       playerVelocity.y += GRAVITY * dt;
       player.position.y += playerVelocity.y * dt;
 
-      // Ground collision (y=0)
       const minY = PLAYER_HEIGHT / 2;
       if (player.position.y < minY) {
         player.position.y = minY;
         playerVelocity.y = 0;
-
-        // Jump only if grounded
-        if (keys.has(" ")) {
-          playerVelocity.y = JUMP_SPEED;
-        }
+        if (keys.has(" ")) playerVelocity.y = JUMP_SPEED;
       }
 
       clampToWorld();
 
-      // Third-person camera follow
-      const behindDistance = 10.5;
-      const height = 6.0;
-      const lookAtHeight = 1.2;
-
-      const yaw = player.rotation.y;
-      const behind = new THREE.Vector3(
-        Math.sin(yaw) * behindDistance,
-        height,
-        Math.cos(yaw) * behindDistance
-      );
-
-      const desiredCamPos = new THREE.Vector3().copy(player.position).add(behind);
-      camera.position.lerp(desiredCamPos, 1 - Math.pow(0.001, dt)); // smooth
-      camera.lookAt(player.position.x, player.position.y + lookAtHeight, player.position.z);
+      // Apply orbit camera around player
+      applyCamera();
 
       checkCoinCollisions();
     }
@@ -478,6 +484,12 @@
       player.position.set(0, PLAYER_HEIGHT / 2, 0);
       playerVelocity.set(0, 0, 0);
       spawnCoins(COIN_SPAWN_COUNT);
+
+      // Reset camera to a nice default behind the player
+      camYaw = Math.PI;
+      camPitch = 0.45;
+      camDist = 12.0;
+      applyCamera();
     }
 
     function setPlayerColor(index) {
@@ -508,33 +520,33 @@
       menuEl.style.display = "flex";
       overlayMsgEl.style.display = "none";
       renderColorPicker();
+
+      // exit pointer lock if active
+      if (document.pointerLockElement) document.exitPointerLock?.();
     }
 
     function winRound() {
       running = false;
 
-      // Unlock logic: each win unlocks the next color (up to palette length)
       state.wins = (state.wins || 0) + 1;
       state.unlocked = Math.min(COLOR_PALETTE.length, Math.max(state.unlocked || 1, 1) + 1);
       saveState();
 
       overlayMsgEl.style.display = "flex";
-      winSubEl.textContent = `Win #${state.wins} • Unlocked: ${COLOR_PALETTE[Math.min(state.unlocked-1, COLOR_PALETTE.length-1)].name}`;
+      const unlockedIdx = Math.min(state.unlocked - 1, COLOR_PALETTE.length - 1);
+      winSubEl.textContent = `Win #${state.wins} • Unlocked: ${COLOR_PALETTE[unlockedIdx].name}`;
 
-      // Small pause, then back to menu
-      setTimeout(() => {
-        returnToMenu();
-      }, 1800);
+      if (document.pointerLockElement) document.exitPointerLock?.();
+
+      setTimeout(() => returnToMenu(), 1800);
     }
 
     // =========================
     // Menu button
     // =========================
-    startBtn.addEventListener("click", () => {
-      startGame();
-    });
+    startBtn.addEventListener("click", () => startGame());
 
-    // If state selected is locked due to corruption, fix it
+    // Fix corrupted state
     if (selectedColorIndex >= state.unlocked) {
       selectedColorIndex = 0;
       state.selectedColorIndex = 0;
